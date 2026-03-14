@@ -122,6 +122,7 @@ jobs:
     #if: github.ref == 'refs/heads/main'
     if: false    # ← Ajoute cette ligne pour désactiver temporairement le déploiement automatique
     environment:
+    
       name: production                     # Environnement GitHub (avec approbation)
       url: http://${{ secrets.SERVER_HOST }}:${{ env.APP_PORT }}
  
