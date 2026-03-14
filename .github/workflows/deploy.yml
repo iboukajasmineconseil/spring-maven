@@ -35,7 +35,11 @@ jobs:
   test:
     name: 🧪 Tests Maven
     runs-on: ubuntu-latest
- 
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+
     steps:
       - name: 📥 Checkout du code
         uses: actions/checkout@v4
