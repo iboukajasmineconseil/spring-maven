@@ -1,71 +1,178 @@
-name: Spring Boot CI/CD
-
+# ==========================================================
+# deploy.yml — Pipeline CI/CD complet
+# Spring Boot + Maven + Docker + SSH Deploy
+# ==========================================================
+ 
+name: CI/CD — Build, Test & Deploy
+ 
+# ——————————————————————————————————————————
+# DÉCLENCHEURS
+# ——————————————————————————————————————————
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [ main ]          # Déclenche sur chaque push vers main
   pull_request:
-    branches:
-      - main
-      - develop
-
+    branches: [ main ]          # Déclenche sur les PR vers main
+  workflow_dispatch:            # Permet le déclenchement manuel
+ 
+# ——————————————————————————————————————————
+# VARIABLES D'ENVIRONNEMENT GLOBALES
+# ——————————————————————————————————————————
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/spring-maven
+  JAVA_VERSION: '17'
+  CONTAINER_NAME: spring-maven-app
+  APP_PORT: '8080'
+ 
+# ——————————————————————————————————————————
+# JOBS
+# ——————————————————————————————————————————
 jobs:
-  build:
-    name: Build & Test Spring Boot
+ 
+  # ----------------------------------------
+  # JOB 1 : TESTS
+  # ----------------------------------------
+  test:
+    name: 🧪 Tests Maven
     runs-on: ubuntu-latest
-
+ 
     steps:
-      # Récupération du code
-      - name: Checkout repository
+      - name: 📥 Checkout du code
         uses: actions/checkout@v4
-
-      # Installation de Java
-      - name: Set up JDK 17
+ 
+      - name: ☕ Setup JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: maven
-
-      # Build & tests Maven
-      - name: Build with Maven
-        run: mvn clean verify
-
-      # Upload du JAR comme artefact
-      - name: Upload JAR artifact
-        uses: actions/upload-artifact@v4
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven                    # Cache automatique du repo Maven
+ 
+      - name: 🧪 Exécution des tests
+        run: mvn test -B --no-transfer-progress
+ 
+      - name: 📊 Publication des résultats de tests
+        uses: dorny/test-reporter@v1
+        if: always()                      # Publier même en cas d'échec
         with:
-          name: springboot-jar
-          path: target/*.jar
-
-  docker:
-    name: Build Docker Image
+          name: Maven Tests
+          path: target/surefire-reports/*.xml
+          reporter: java-junit
+ 
+  # ----------------------------------------
+  # JOB 2 : BUILD & PUSH DOCKER
+  # ----------------------------------------
+  build-and-push:
+    name: 🐳 Build & Push Docker
     runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-
+    needs: test                           # Attend la réussite des tests
+    if: github.ref == 'refs/heads/main'   # Seulement sur main (pas les PR)
+ 
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+ 
     steps:
-      - name: Checkout repository
+      - name: 📥 Checkout du code
         uses: actions/checkout@v4
-
-      - name: Download JAR artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: springboot-jar
-          path: target
-
-      - name: Build Docker image
-        run: docker build -t springboot-app:latest .
-
-      - name: Login to Docker Hub
+ 
+      - name: 🔑 Connexion à Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+ 
+      - name: 🏷️ Génération des métadonnées (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
 
-      - name: Build & Push Docker image
+            type=sha,prefix=sha-             # Tag par commit SHA
+            type=raw,value=latest            # Tag 'latest' toujours mis à jour
+            type=semver,pattern={{version}}  # Tag de version si tag Git
+ 
+      - name: 🔧 Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+ 
+      - name: 🏗️ Build & Push de l'image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha              # Cache GitHub Actions
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64 # Multi-architecture
+ 
+  # ----------------------------------------
+  # JOB 3 : DÉPLOIEMENT
+  # ----------------------------------------
+  deploy:
+    name: 🚀 Déploiement Production
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    #if: github.ref == 'refs/heads/main'
+    if: false    # ← Ajoute cette ligne pour désactiver temporairement le déploiement automatique
+    environment:
+      name: production                     # Environnement GitHub (avec approbation)
+      url: http://${{ secrets.SERVER_HOST }}:${{ env.APP_PORT }}
+ 
+    steps:
+      - name: 🚀 Déploiement via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}  # Défaut 22 si non défini
+          script: |
+            # Connexion à Docker Hub sur le serveur
+            echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
+              docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
+ 
+            # Arrêt et suppression de l'ancien conteneur
+            docker stop ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+            docker rm   ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+ 
+            # Téléchargement de la nouvelle image
+            docker pull ${{ env.DOCKER_IMAGE }}:latest
+ 
+            # Démarrage du nouveau conteneur
+            docker run -d \
+
+
+              --name ${{ env.CONTAINER_NAME }} \
+              --restart unless-stopped \
+              -p ${{ env.APP_PORT }}:8080 \
+              -e SPRING_PROFILES_ACTIVE=prod \
+              -e SPRING_DATASOURCE_URL=${{ secrets.DB_URL }} \
+              -e SPRING_DATASOURCE_USERNAME=${{ secrets.DB_USER }} \
+              -e SPRING_DATASOURCE_PASSWORD=${{ secrets.DB_PASSWORD }} \
+              ${{ env.DOCKER_IMAGE }}:latest
+ 
+            # Nettoyage des anciennes images
+            docker image prune -f
+ 
+            # Vérification du démarrage (attente 15s)
+            sleep 15
+            docker ps | grep ${{ env.CONTAINER_NAME }}
+            echo '✅ Déploiement réussi !'
+ 
+      - name: 🔔 Notification de succès
+        if: success()
         run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/springboot-app:latest .
-          docker push ${{ secrets.DOCKER_USERNAME }}/springboot-app:latest
+          echo '🎉 Application déployée avec succès !'
+          echo "Image: ${{ env.DOCKER_IMAGE }}:latest"
+          echo "Commit: ${{ github.sha }}"
+ 
+      - name: 🚨 Notification d'échec
+        if: failure()
+        run: |
+          echo '❌ Le déploiement a échoué !'
+          echo "Commit: ${{ github.sha }}"
+          echo "Consulter les logs ci-dessus pour diagnostiquer."
 
