@@ -110,7 +110,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha              # Cache GitHub Actions
           cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64 # Multi-architecture
+          platforms: linux/amd64
  
   # ----------------------------------------
   # JOB 3 : DÉPLOIEMENT
